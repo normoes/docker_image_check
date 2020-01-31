@@ -1,0 +1,24 @@
+---
+version: '3'
+
+services:
+  image_check:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USER_ID: 1000
+    volumes:
+      - ./:/code
+      - /var/run/docker.sock:/var/run/docker.sock
+    # command: "whitelist --debug --reverse"
+    # command: "blacklist --debug --reverse"
+    stdin_open: true
+    tty: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+

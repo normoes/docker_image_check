@@ -1,0 +1,8 @@
+# comment
+# blank lines are ignored
+# docker_image_check
+docker_image_*
+normo/*
+normo/money-dev
+
+

@@ -1,0 +1,6 @@
+venv/
+*.vim
+*.pyc
+container.attrs.txt
+container.stats.txt
+
