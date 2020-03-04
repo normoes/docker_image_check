@@ -29,13 +29,6 @@ Comments in the files start with '#'.
       + INFO:__main__:[blacklist] Bad image found: 'malicious_repo/some_image'.
       + INFO:__main__:[blacklist] Good image found: 'python:3.7-alpine3.10'.
       + malicious_repo/some_image
-* **Hint**:
-    - Using 'whitelist' mode swaps the results.
-    - In this example the log message ('Good', 'Bad') does not matter.
-    - INFO:__main__:[whitelist] Good image found: 'malicious_repo/some_image'.
-    - INFO:__main__:[whitelist] Bad image found: 'python:3.7-alpine3.10'.
-    - python:3.7-alpine3.10
-
 """
 
 import docker
@@ -43,13 +36,28 @@ import logging
 import sys
 import argparse
 import re
+from typing import Set, List, Dict
+from dataclasses import dataclass
+import json
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_images_from_file(image_file=""):
+@dataclass
+class Modes:
+    """Modes to run the app with.
+    """
+    blacklist: str = "blacklist"
+    whitelist: str = "whitelist"
+
+
+def get_images_from_file(image_file:str="") -> Set:
+    """Get docker images from file.
+
+    Images can be defined as complete name string or as regular expression.
+    """
     images = set()
     if image_file:
         with open(image_file, "r") as file_handler:
@@ -62,44 +70,79 @@ def get_images_from_file(image_file=""):
     return images
     
 
-def detailed_containers(mode=None, images=set(), client=None):
+def get_running_containers(client=None) -> List:
+    """Get docker images from running docker containers.
+    """
     if not client:
         client = docker.DockerClient(base_url='unix://var/run/docker.sock')
 
-    images_found = set()
-    containers = client.containers.list()
-    image_names = set()
-
+    # https://docker-py.readthedocs.io/en/stable/containers.html
+    # sparse (bool) – Do not inspect containers.
+    #                 Returns partial information, but guaranteed not to
+    #                 block. Use Container.reload() on resulting objects
+    #                 to retrieve all attributes.
+    containers = client.containers.list(sparse=True)
+    container_images = set()
     for container in containers:
-        image_names.add(container.attrs['Config']['Image'])
-        # print(container.attrs)
+        try:
+            container_images.add(container.attrs["Image"])
+        except KeyError as e:
+            logger.info(f"No detailed information about container '{container}'.")
         # print(container.stats(stream=False))
 
-    logger.debug(f"Images used by running containers: '{image_names}'.")
+    logger.debug(f"Images used by running containers: '{container_images}'.")
+
+    return container_images
 
 
-    for image_name in image_names:
+def get_image_layers(images:Set=set(), client=None) -> Dict[str, List]:
+    """Get the underlying docker image layers of the given docker images.
+    """
+    if not client:
+        client = docker.DockerClient(base_url='unix://var/run/docker.sock')
+
+    layers = {}
+    for image in images:
+        try:
+            layers[image] = client.images.get(name=image).attrs["RootFS"].get("Layers", [])
+        except KeyError as e:
+            logger.info(f"No detailed information about image '{image}'.")
+
+    print(layers)
+    return layers
+
+
+def get_used_images(mode:Modes=Modes.whitelist, images_from_file:Set=set(), container_images:Set=set()) -> List:
+    """Filter docker images according to mode.
+
+    Depends on mode:
+    * blacklist
+    * whitelist
+    """
+    images_found = set()
+    for image_name in container_images:
         is_match = False
-        for image in images:
+        for image in images_from_file:
             p = re.compile(image)
-            
+            # Avoid checking the same image several times.           
             if image_name in images_found:
-                image_ignored = True
                 break
             is_match = not p.match(image_name) is None
             logger.debug(f"[{is_match}] for '{image_name}' and '{image}'.")
-            if mode == "blacklist":
+            if mode == Modes.blacklist:
                 if is_match:
+                    # Add image to the blacklist.
                     images_found.add(image_name)
                     logger.info(f"[{mode}] Bad image found: '{image_name}'.") 
                     break
-            elif mode == "whitelist":
+            elif mode == Modes.whitelist:
                 if is_match:
                     logger.info(f"[{mode}] Good image found: '{image_name}'.") 
                     break
-        if mode == "blacklist" and not is_match:
+        if mode == Modes.blacklist and not is_match:
             logger.info(f"[{mode}] Good image found: '{image_name}'.") 
-        if mode == "whitelist" and not is_match:
+        if mode == Modes.whitelist and not is_match:
+            # Add image to the whitelist.
             logger.info(f"[{mode}] Bad image found: '{image_name}'.") 
             images_found.add(image_name)
 
@@ -131,6 +174,9 @@ def main():
         "--image-file", default="images.txt", help="Path to images.txt."
     )
     config.add_argument(
+        "--layers", action="store_true", help="Show underlying docker image layers."
+    )
+    config.add_argument(
         "--debug", action="store_true", help="Show debug info."
     )
 
@@ -140,12 +186,12 @@ def main():
     subparsers.required = True
 
     blacklist = subparsers.add_parser(
-        "blacklist",
+        Modes.blacklist,
         parents=[config],
         help="Images defined in 'images.txt' are considered **Bad**.",
     )
     whitelist = subparsers.add_parser(
-        "whitelist",
+        Modes.whitelist,
         parents=[config],
         help="Images defined in 'images.txt' are considered **Good**.",
     )
@@ -153,6 +199,7 @@ def main():
     args = parser.parse_args()
 
     mode = args.subcommand
+    layers = args.layers
     debug = args.debug
 
     if debug:
@@ -163,11 +210,22 @@ def main():
 
     logger.info(f"Working in '{mode}' mode.")
 
-    images = get_images_from_file(args.image_file)
+    # Get images from file.
+    images_from_file = get_images_from_file(args.image_file)
 
-    images_found = detailed_containers(mode=mode, images=images)
-    for image in images_found:
-        print(image)
+    # Get docker images from running containers.
+    container_images = get_running_containers()
+
+    # Filter images according to mode.
+    images_found = get_used_images(mode=mode, images_from_file=images_from_file, container_images=container_images)
+
+    if layers:
+        # Get underlying docker image layers.
+        image_layers = get_image_layers(images=images_found)
+        print(json.dumps(image_layers, indent=2))
+    else:
+        for image in images_found:
+            print(image)
 
     return 0
 

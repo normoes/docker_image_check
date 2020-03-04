@@ -15,7 +15,7 @@ RUN apk add --no-cache --virtual .build-deps \
 VOLUME ["/code"]
 
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh;
+RUN chmod +x /entrypoint.sh
 COPY requirements.txt /code/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade  pip \
